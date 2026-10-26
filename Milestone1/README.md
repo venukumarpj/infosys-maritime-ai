@@ -33,4 +33,4 @@ Milestone 1 establishes the secure authentication, authorization, and administra
 
 | Forgot Password (OTP) | User Dashboard |
 | :---: | :---: |
-| ![OTP](screenshots/forgot_password.png) | ![Dashboard](screenshots/dashboard.png) |
+| ![OTP](https://raw.githubusercontent.com/venukumarpj/infosys-maritime-ai/refs/heads/main/Milestone1/screenshots/Email%20OTP%20Forgot%20password.png) | ![Dashboard](https://raw.githubusercontent.com/venukumarpj/infosys-maritime-ai/refs/heads/main/Milestone1/screenshots/Dashboard%20page.png) |
