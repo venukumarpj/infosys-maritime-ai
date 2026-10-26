@@ -29,7 +29,7 @@ Milestone 1 establishes the secure authentication, authorization, and administra
 ## Screenshots
 | Login Page | Signup Page |
 | :---: | :---: |
-| ![Login](screenshots/login.png) | ![Signup](screenshots/signup.png) |
+| ![Login](https://raw.githubusercontent.com/venukumarpj/infosys-maritime-ai/refs/heads/main/Milestone1/screenshots/Login%20Page.png) | ![Signup](screenshots/signup.png) |
 
 | Forgot Password (OTP) | User Dashboard |
 | :---: | :---: |
