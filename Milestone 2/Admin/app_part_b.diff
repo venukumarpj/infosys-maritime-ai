@@ -1,0 +1,265 @@
+--- app.py (your version)	2026-11-01 20:32:08.305403195 +0000
++++ app.py (with part B)	2026-11-02 06:44:14.539248094 +0000
+@@ -6,7 +6,8 @@
+ import pandas as pd
+ import plotly.graph_objects as go
+ import streamlit as st
+-from streamlit_option_menu import option_menu
++import rbac
++import admin_users
+ 
+ st.set_page_config(page_title="FreightQuote AI", page_icon="⚓", layout="wide", initial_sidebar_state="auto")
+ 
+@@ -235,10 +236,15 @@
+         return dict(r) if r else None
+ 
+ 
++@st.cache_resource
+ def ensure_admin_account():
+-    """Create the platform admin once; keep its password bcrypt-hashed in the Milestone 1 database."""
++    """First run only: create the platform admin (password bcrypt-hashed). Once any Admin exists this does nothing,
++    so an admin that was demoted or deleted on purpose stays that way."""
+     if not ADMIN_USERNAME or not ADMIN_PASSWORD:
+-        return
++        return True
++    with db() as c:
++        if c.execute("SELECT 1 FROM users WHERE role='Admin' LIMIT 1").fetchone():
++            return True
+     email = (ADMIN_EMAIL or "admin@infosys.com").strip().lower()
+     raw_name = ADMIN_USERNAME.strip()
+     uname = raw_name.split("@", 1)[0] if "@" in raw_name else raw_name
+@@ -248,16 +254,26 @@
+     stamp = datetime.datetime.now().isoformat(timespec="seconds")
+     with db() as c:
+         if user:
+-            c.execute("UPDATE users SET role='Admin', email=?, username=?, created_at=COALESCE(created_at, ?) WHERE id=?",
++            c.execute("UPDATE users SET role='Admin', locked=0, email=?, username=?, created_at=COALESCE(created_at, ?) WHERE id=?",
+                       (email, uname, stamp, user["id"]))
+             if not user.get("password_hash"):
+                 c.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_txt(ADMIN_PASSWORD), user["id"]))
+         else:
++            # blank recovery question + random answer: the Admin account cannot be reset through the security question
+             c.execute("INSERT INTO users(username,email,password_hash,security_question,security_answer_hash,pwd_fp,role,locked,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+-                      (uname, email, hash_txt(ADMIN_PASSWORD), "", hash_txt("admin-recovery-disabled"), None, "Admin", 0, stamp))
++                      (uname, email, hash_txt(ADMIN_PASSWORD), "", admin_users.random_recovery_answer_hash(hash_txt), None, "Admin", 0, stamp))
++    return True
++
++
++@st.cache_resource
++def scrub_recovery_answers():
++    """Older databases: replace the recovery answers that were written into the notebook ('admin-created', ...)."""
++    with db() as c:
++        return admin_users.fix_default_recovery_answers(c, check_txt, hash_txt)
+ 
+ 
+ ensure_admin_account()
++scrub_recovery_answers()
+ 
+ 
+ # ============================================================
+@@ -310,7 +326,7 @@
+             c.execute("INSERT OR REPLACE INTO lockouts VALUES (?,?,?,?)", (key, 0, now + LOCK_SECONDS, now))
+             if key.startswith(("login:", "admin:")):
+                 ident = key.split(":", 1)[1]
+-                c.execute("UPDATE users SET locked=1 WHERE lower(email)=lower(?) OR lower(username)=lower(?)", (ident, ident))
++                c.execute("UPDATE users SET locked=1 WHERE (lower(email)=lower(?) OR lower(username)=lower(?)) AND COALESCE(role,'')<>'Admin'", (ident, ident))
+             return MAX_ATTEMPTS, True
+         c.execute("INSERT OR REPLACE INTO lockouts VALUES (?,?,?,?)", (key, attempts, 0, now))
+         return attempts, False
+@@ -499,39 +515,17 @@
+ # ============================================================
+ # MILESTONE 2 — STREAMLIT RBAC + FREIGHTQUOTE BUSINESS LAYER
+ # ============================================================
+-ROLE_MENU = {
+-    "Admin": {"Dashboard", "Copilot", "Route", "Quotes", "Carriers", "Weather", "Margin", "Customs", "Admin"},
+-    "Operations Manager": {"Dashboard", "Copilot", "Route", "Carriers", "Weather", "Customs"},
+-    "Freight Broker": {"Dashboard", "Copilot", "Quotes", "Carriers", "Margin"},
+-    "Auditor": {"Dashboard", "Copilot", "Route", "Quotes", "Carriers", "Weather", "Margin", "Customs"},
+-    "Customer": {"Dashboard", "Copilot", "Quotes"},
+-}
+-ROLE_CAPS = {
+-    "Admin": {"users", "quotes_create", "agents_run", "storms_inject", "reroute", "customs_edit"},
+-    "Operations Manager": {"agents_run", "reroute"},
+-    "Freight Broker": {"quotes_create"},
+-    "Auditor": set(),
+-    "Customer": {"quotes_create_own"},
+-}
+-ROLE_MATRIX = [
+-    ("Admin", "✓", "✓", "✓", "✓", "✓", "✓", "✓", "✓", "✓"),
+-    ("Operations Manager", "✓", "✓", "✗", "✓", "✓", "✗", "✓", "✓", "✗"),
+-    ("Freight Broker", "✓", "✗", "✓", "✓", "✗", "✓", "✗", "✗", "✗"),
+-    ("Auditor", "✓", "✓", "✓", "✓", "✓", "✓", "✓", "✗", "✗"),
+-    ("Customer", "✓", "✗", "✓", "✗", "✗", "✗", "✗", "✗", "✗"),
+-]
++from rbac import can_page, can_do, menu_for, require_page, AccessDenied
+ 
+-def can_page(role, page):
+-    return page == "Profile" or page in ROLE_MENU.get(role, set())
+-
+-def can_do(role, capability):
+-    return role == "Admin" or capability in ROLE_CAPS.get(role, set())
+ 
+ def need(role, capability):
+-    if can_do(role, capability):
+-        return True
+-    st.error("403 — Your role does not have permission to perform this action.")
+-    return False
++    """UI wrapper around rbac.need: shows the 403 message and returns False instead of raising."""
++    try:
++        return rbac.need(role, capability)
++    except AccessDenied as e:
++        st.error(str(e))
++        return False
++
+ 
+ @st.cache_resource(show_spinner="Preparing FreightQuote data and agents…")
+ def load_freight_backend():
+@@ -818,6 +812,8 @@
+                         st.error("⚠️ Enter your username or registered email.")
+                     elif not user:
+                         st.error("❌ No account found with that username or email.")
++                    elif sq_btn and not (user.get("security_question") or "").strip():
++                        st.error("Security-question recovery is not set up for this account. Use Email OTP instead, then set a question in Profile.")
+                     elif sq_btn:
+                         st.session_state.update(reset_email=user["email"], reset_mode="sq", sq_text=user["security_question"])
+                         st.rerun()
+@@ -925,7 +921,7 @@
+                         names.add(str(admin_user.get("username", "")).lower())
+                     ok_u = a_user.strip().lower() in names
+                     ok_p = bool(admin_user) and check_txt(a_pass, admin_user.get("password_hash"))
+-                    if ok_u and ok_p and not int(admin_user.get("locked") or 0):
++                    if ok_u and ok_p and admin_user.get("role") == "Admin" and not int(admin_user.get("locked") or 0):
+                         clear_failures(key)
+                         with db() as c:
+                             c.execute("UPDATE users SET last_login=? WHERE id=?", (datetime.datetime.now().isoformat(timespec="seconds"), admin_user["id"]))
+@@ -962,7 +958,7 @@
+         st.exception(e)
+         st.stop()
+ 
+-    pages = [p for p in ["Dashboard", "Copilot", "Route", "Quotes", "Carriers", "Weather", "Margin", "Customs", "Admin", "Profile"] if can_page(role, p)]
++    pages = menu_for(role)          # only the pages this role may open
+     with st.sidebar:
+         st.markdown("<div style='text-align:center;padding:12px 4px 16px'><div style='font-size:34px'>⚓</div><div style='font-size:18px;font-weight:800'>FreightQuote AI</div><div style='font-size:12px;color:#64748b'>Milestone 1 + Milestone 2 · Streamlit</div></div>", unsafe_allow_html=True)
+         st.caption(f"Signed in as **{username}**")
+@@ -974,8 +970,10 @@
+             logout()
+     if dark_mode:
+         st.markdown("<style>.stApp{background:#0b1220!important;color:#e5e7eb!important} section[data-testid='stSidebar']{background:#111827!important} h1,h2,h3,p,label{color:#e5e7eb!important} [data-testid='stDataFrame'],[data-testid='stForm']{filter:brightness(.92)}</style>", unsafe_allow_html=True)
+-    if not can_page(role, page):
+-        st.error("403 — This page is not available for your role.")
++    try:
++        require_page(role, page)        # 403 even for a stale or hand-set page name
++    except AccessDenied as e:
++        st.error(str(e))
+         st.stop()
+ 
+     st.markdown(f"<div class='banner'><div><h1>FreightQuote AI</h1><div class='sub'>Agentic AI for maritime freight pricing, routing and operations</div></div><div class='pill'>{esc(role)} · {esc(username)}</div></div>", unsafe_allow_html=True)
+@@ -1130,8 +1128,16 @@
+                         result=DOM.run_quote(rid)
+                     if result:
+                         st.success("Quote generated successfully.")
+-                        st.write(result.get("narrative","Quote created."))
+-                        st.json(result)
++                        if role == "Customer":
++                            qid = f"QTE-L{int(rid):05d}"
++                            qrow = freight_query(B, "SELECT final_price,status FROM freight_quotes WHERE quote_id=? AND customer_id=?", (qid, customer_id))
++                            if not qrow.empty:
++                                metric_row([("Quote", qid, "🧾"), ("Price", money(qrow.iloc[0]["final_price"]), "💲"), ("Status", qrow.iloc[0]["status"], "📌")])
++                            for a_ in result.get("actions", []):
++                                if a_.get("type") == "quote_hold": st.warning(a_.get("detail", "Customs documents are missing."))
++                        else:
++                            st.write(result.get("narrative","Quote created."))
++                            st.json(result)
+                     else: st.error("Quote pipeline could not complete. Check the request status and agent logs.")
+         else:
+             st.info("Read-only access: your Auditor role can view quotes but cannot create them.")
+@@ -1234,74 +1240,20 @@
+                 with db() as c: c.execute("UPDATE users SET password_hash=?,pwd_fp=? WHERE id=?",(hash_txt(new_pw),pwd_fp(new_pw),user["id"]))
+                 st.success("Password changed successfully. Please sign in again."); logout()
+ 
+-    # ---------------- ADMIN DASHBOARD ----------------
+-    elif page == "Admin":
+-        if not need(role,"users"):
+-            st.stop()
+-        st.subheader("Administrator dashboard")
+-        with db() as c:
+-            users_df=pd.read_sql_query("SELECT id,username,email,role,locked,created_at,last_login,customer_id FROM users ORDER BY id",c)
+-            admin_count=c.execute("SELECT COUNT(*) FROM users WHERE role='Admin'").fetchone()[0]
+-        k1,k2,k3=st.columns(3)
+-        k1.metric("Total users",len(users_df));k2.metric("Locked users",int(users_df.locked.fillna(0).astype(int).sum()) if not users_df.empty else 0);k3.metric("Admin accounts",int(admin_count))
+-        if not users_df.empty:
+-            st.markdown("#### Users")
+-            show_df(users_df.drop(columns=["id","customer_id"]),400)
+-            role_counts=users_df.groupby("role").size().rename("users").reset_index()
+-            st.markdown("#### Users per role"); show_df(role_counts,200)
+-        st.markdown("#### Add user")
+-        with st.form("admin_add_user_form"):
+-            c1,c2=st.columns(2)
+-            nu=c1.text_input("Username");ne=c2.text_input("Email")
+-            npw=st.text_input("Temporary password",type="password")
+-            nr=st.selectbox("Role",["Operations Manager","Freight Broker","Auditor","Customer","Admin"])
+-            add=st.form_submit_button("Create user",type="primary")
+-        if add:
+-            ne=ne.strip().lower();nu=nu.strip();problems=password_problems(npw)
+-            if not valid_username(nu) or not valid_email(ne): st.error("Enter a valid username and email address.")
+-            elif problems: st.error(pw_error(problems))
++        with st.form("profile_recovery_form"):
++            st.markdown("**Account recovery question**")
++            st.caption("Used by Forgot password → Security question. Leave your own answer private.")
++            rq_pw = st.text_input("Current password", type="password", key="rq_current_pw")
++            rq_q = st.selectbox("Security question", SECURITY_QUESTIONS, key="rq_question")
++            rq_a = st.text_input("Security answer", key="rq_answer")
++            save_rq = st.form_submit_button("Save recovery question")
++        if save_rq:
++            if not check_txt(rq_pw, user.get("password_hash")): st.error("Current password is incorrect.")
++            elif not rq_a.strip(): st.error("Enter an answer.")
+             else:
+-                with db() as c: dup=c.execute("SELECT 1 FROM users WHERE lower(username)=lower(?) OR lower(email)=lower(?)",(nu,ne)).fetchone()
+-                if dup: st.error("Username or email already exists.")
+-                elif password_taken(npw): st.error("This password is already used by another account.")
+-                else:
+-                    with db() as c: c.execute("INSERT INTO users(username,email,password_hash,security_question,security_answer_hash,pwd_fp,role,locked,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(nu,ne,hash_txt(npw),SECURITY_QUESTIONS[0],hash_txt("admin-created"),pwd_fp(npw),nr,0,datetime.datetime.now().isoformat(timespec="seconds")))
+-                    audit_admin(email,"add_user",ne,f"Created {nr} account");st.success("User created.");st.rerun()
+-        st.markdown("#### Change role / promote / demote")
+-        editable=users_df[users_df.email!=email] if not users_df.empty else users_df
+-        if not editable.empty:
+-            idmap={f"{r.username} · {r.email} ({r.role})":int(r.id) for r in editable.itertuples()}
+-            chosen=st.selectbox("Select account",list(idmap))
+-            target_id=idmap[chosen]
+-            current=users_df[users_df.id==target_id].iloc[0]
+-            new_role=st.selectbox("New role",["Admin","Operations Manager","Freight Broker","Auditor","Customer"],index=["Admin","Operations Manager","Freight Broker","Auditor","Customer"].index(current.role))
+-            if st.button("Save role change"):
+-                if current.role=="Admin" and new_role!="Admin" and admin_count<=1: st.error("The last remaining Admin cannot be demoted.")
+-                else:
+-                    with db() as c: c.execute("UPDATE users SET role=? WHERE id=?",(new_role,target_id))
+-                    audit_admin(email,"change_role",current.email,f"{current.role} -> {new_role}");st.success("Role updated.");st.rerun()
+-            col1,col2=st.columns(2)
+-            if col1.button("Lock selected user"):
+-                if int(current.id)==int(user["id"]): st.error("You cannot lock your own account.")
+-                elif current.role=="Admin" and admin_count<=1: st.error("The last remaining Admin cannot be locked.")
+-                else:
+-                    with db() as c: c.execute("UPDATE users SET locked=1 WHERE id=?",(target_id,))
+-                    audit_admin(email,"lock_user",current.email,"Account locked");st.success("User locked immediately.");st.rerun()
+-            if col2.button("Unlock selected user"):
+-                with db() as c: c.execute("UPDATE users SET locked=0 WHERE id=?",(target_id,))
+-                audit_admin(email,"unlock_user",current.email,"Account unlocked");st.success("User unlocked.");st.rerun()
+-            if st.button("Delete selected user",type="secondary"):
+-                if int(current.id)==int(user["id"]): st.error("You cannot delete your own account.")
+-                elif current.role=="Admin" and admin_count<=1: st.error("The last remaining Admin cannot be deleted.")
+-                elif st.session_state.get("confirm_delete_user")==target_id:
+-                    with db() as c: c.execute("DELETE FROM users WHERE id=?",(target_id,))
+-                    audit_admin(email,"delete_user",current.email,"Account deleted");st.session_state.confirm_delete_user=None;st.success("User deleted.");st.rerun()
+-                else:
+-                    st.session_state.confirm_delete_user=target_id
+-                    st.warning("Click Delete selected user again to confirm permanent deletion.")
+-        st.markdown("#### Activity log · latest 50 actions")
+-        with db() as c: logdf=pd.read_sql_query("SELECT ts,actor,action,target,detail FROM activity_log ORDER BY id DESC LIMIT 50",c)
+-        show_df(logdf,300)
+-        st.markdown("#### Role permission matrix")
+-        st.table(pd.DataFrame(ROLE_MATRIX,columns=["Role","Copilot","Route","Quotes","Carriers","Weather","Margin","Customs","Run agents","Users"]))
++                with db() as c: c.execute("UPDATE users SET security_question=?, security_answer_hash=? WHERE id=?", (rq_q, hash_txt(rq_a.strip().lower()), user["id"]))
++                st.success("Recovery question saved.")
+ 
++    # ---------------- ADMIN DASHBOARD ----------------
++    elif page == "Admin":
++        admin_users.render_admin_page(db, {"id": user["id"], "email": email, "role": role}, hash_txt, pwd_fp)
