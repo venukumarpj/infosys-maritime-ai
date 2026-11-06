@@ -19,11 +19,6 @@ FreightQuote AI is a collaborative freight operations application featuring auth
 Milestone2/
 ├── FreightQuote_Milestone2.ipynb
 ├── README.md
-├── AI Copilot/
-├── Admin Backend/
-├── Admin Dashboard/
-├── Authentication/
-├── RBAC_CUSTOMER_ISOLATION/
 └── screenshots/
 ```
 
