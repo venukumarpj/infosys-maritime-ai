@@ -164,7 +164,7 @@ The five members worked on complementary parts of the same application, bringing
 |---|---|---|
 | **Sama Abhinaya** · Member 1 | RAG Knowledge Base | Collected and organized freight references; handled document cleaning, deduplication and chunk creation; developed the RAG builder and FAISS/BM25 retrieval workflow; prepared source statistics and citation-based knowledge tests. |
 | **Aparna Pulimoottil Jaykumar** · Member 2 | AI Copilot Training | Tested unanswered and weakly matched questions; developed teaching questions and answers; improved intent matching, synonyms and Copilot response behavior; worked on retesting, answer quality and uncertainty handling. |
-| **Venu Kumar** · Member 3 | Agent Simulators | Developed and refined the Route, Quote, Carrier, Weather and Customs simulator workflows; modeled disruption scenarios, assumptions and outcome ranges; focused on repeatable, non-destructive simulations. |
+| **Venu Kumar P J** · Member 3 | Agent Simulators | Developed and refined the Route, Quote, Carrier, Weather and Customs simulator workflows; modeled disruption scenarios, assumptions and outcome ranges; focused on repeatable, non-destructive simulations. |
 | **Anshu Giri** · Member 4 | Integration & Security | Integrated authentication, profile features and account management; worked on role-based menus and permissions across five user roles, administrative controls and security-related activity tracking. |
 | **Sahana NS** · Member 5 | Frontend, Integration & Submission | Integrated the completed modules into the final interface; refined navigation and page design; coordinated application testing, Colab deployment, screenshots, project documentation and the six-slide presentation. |
 
